@@ -20,6 +20,7 @@ const app = express();
 
 connectDB();
 
+app.set('trust proxy', 1); // Render sits behind a reverse proxy
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*', credentials: true }));
 app.use(express.json({ limit: '10mb' }));
@@ -29,14 +30,23 @@ if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('dev'));
 }
 
-const limiter = rateLimit({
+// Strict limit on auth only (brute-force protection)
+app.use('/api/auth', rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { message: 'Too many requests, please try again later' },
-});
-app.use('/api', limiter);
+  message: { message: 'Too many login attempts, please try again later.' },
+}));
+
+// Generous limit for all other routes (small internal team)
+app.use('/api', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many requests, please try again later.' },
+}));
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
