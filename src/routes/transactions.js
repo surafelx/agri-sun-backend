@@ -13,12 +13,13 @@ router.use(authenticate);
 router.get('/', async (req, res, next) => {
   try {
     const {
-      page = 1, limit = 20, type, search, startDate, endDate, createdBy,
+      page = 1, limit = 20, type, search, startDate, endDate, createdBy, itemId,
     } = req.query;
 
     const filter = {};
     if (type) filter.transactionType = type;
     if (createdBy) filter.createdBy = createdBy;
+    if (itemId) filter['items.item'] = itemId;
     if (search) {
       filter.$or = [
         { referenceNumber: { $regex: search, $options: 'i' } },
