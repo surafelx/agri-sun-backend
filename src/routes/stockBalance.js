@@ -69,7 +69,7 @@ router.get('/:itemId', async (req, res, next) => {
         { $group: { _id: null, totalIn: { $sum: '$items.quantity' }, totalCost: { $sum: '$items.totalPrice' } } },
       ]),
       Transaction.aggregate([
-        { $match: { transactionType: 'sale', 'items.item': item._id } },
+        { $match: { transactionType: { $in: ['sale', 'transfer'] }, 'items.item': item._id } },
         { $unwind: '$items' },
         { $match: { 'items.item': item._id } },
         { $group: { _id: null, totalOut: { $sum: '$items.quantity' }, totalRevenue: { $sum: '$items.totalPrice' }, totalProfit: { $sum: '$items.profit' } } },

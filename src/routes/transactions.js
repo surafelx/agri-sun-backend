@@ -137,6 +137,7 @@ router.post(
         const quantityDelta =
           transactionType === 'purchase' ? lineItem.quantity
           : transactionType === 'sale' ? -lineItem.quantity
+          : transactionType === 'transfer' ? -lineItem.quantity
           : lineItem.quantity;
 
         let newCostPrice = dbItem.costPrice;
@@ -226,6 +227,7 @@ router.delete(
         const reverseDelta =
           transaction.transactionType === 'purchase' ? -lineItem.quantity
           : transaction.transactionType === 'sale' ? lineItem.quantity
+          : transaction.transactionType === 'transfer' ? lineItem.quantity
           : -lineItem.quantity;
 
         await Item.findByIdAndUpdate(lineItem.item, { $inc: { quantity: reverseDelta } });

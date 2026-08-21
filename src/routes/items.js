@@ -108,7 +108,7 @@ router.get(
         if (!lineItem) continue;
 
         const qtyIn = txn.transactionType === 'purchase' ? lineItem.quantity : 0;
-        const qtyOut = txn.transactionType === 'sale' ? lineItem.quantity : 0;
+        const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
         const adjustment = txn.transactionType === 'adjustment' ? lineItem.quantity : 0;
 
         runningBalance += qtyIn - qtyOut + adjustment;
