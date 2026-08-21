@@ -71,7 +71,7 @@ router.get(
 router.post(
   '/',
   [
-    body('transactionType').isIn(['purchase', 'sale', 'adjustment']).withMessage('Invalid transaction type'),
+    body('transactionType').isIn(['purchase', 'sale', 'adjustment', 'transfer']).withMessage('Invalid transaction type'),
     body('referenceNumber').trim().notEmpty().withMessage('Reference number is required'),
     body('transactionDate').optional().isISO8601().toDate(),
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
@@ -83,7 +83,7 @@ router.post(
   async (req, res, next) => {
     try {
       const { transactionType, referenceNumber, transactionDate, customerSupplierName,
-        customerSupplierContact, notes, items } = req.body;
+        customerSupplierContact, tinNo, notes, items } = req.body;
 
       // Validate all items exist
       const itemIds = items.map((i) => i.item);
@@ -125,7 +125,7 @@ router.post(
 
       const transaction = await Transaction.create({
         transactionType, referenceNumber, transactionDate: transactionDate || new Date(),
-        customerSupplierName, customerSupplierContact, notes, totalAmount,
+        customerSupplierName, customerSupplierContact, tinNo, notes, totalAmount,
         items: lineItems, createdBy: req.user._id,
       });
 
@@ -178,17 +178,19 @@ router.put(
     body('transactionDate').optional().isISO8601().toDate(),
     body('customerSupplierName').optional().trim(),
     body('customerSupplierContact').optional().trim(),
+    body('tinNo').optional().trim(),
     body('notes').optional().trim(),
   ],
   validate,
   async (req, res, next) => {
     try {
-      const { referenceNumber, transactionDate, customerSupplierName, customerSupplierContact, notes } = req.body;
+      const { referenceNumber, transactionDate, customerSupplierName, customerSupplierContact, tinNo, notes } = req.body;
       const updates = {};
       if (referenceNumber !== undefined) updates.referenceNumber = referenceNumber;
       if (transactionDate !== undefined) updates.transactionDate = transactionDate;
       if (customerSupplierName !== undefined) updates.customerSupplierName = customerSupplierName;
       if (customerSupplierContact !== undefined) updates.customerSupplierContact = customerSupplierContact;
+      if (tinNo !== undefined) updates.tinNo = tinNo;
       if (notes !== undefined) updates.notes = notes;
 
       const transaction = await Transaction.findByIdAndUpdate(req.params.id, updates, { new: true })

@@ -15,6 +15,7 @@ const transactionRoutes = require('./routes/transactions');
 const dashboardRoutes = require('./routes/dashboard');
 const stockBalanceRoutes = require('./routes/stockBalance');
 const activityLogRoutes = require('./routes/activityLog');
+const supplierRoutes = require('./routes/suppliers');
 
 const app = express();
 
@@ -57,6 +58,7 @@ app.use('/api/transactions', transactionRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/stock-balance', stockBalanceRoutes);
 app.use('/api/activity-log', activityLogRoutes);
+app.use('/api/suppliers', supplierRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));

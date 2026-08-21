@@ -15,13 +15,14 @@ const transactionSchema = new mongoose.Schema(
   {
     transactionType: {
       type: String,
-      enum: ['purchase', 'sale', 'adjustment'],
+      enum: ['purchase', 'sale', 'adjustment', 'transfer'],
       required: true,
     },
     transactionDate: { type: Date, default: Date.now },
     referenceNumber: { type: String, required: true, trim: true },
     customerSupplierName: { type: String, trim: true, default: null },
     customerSupplierContact: { type: String, trim: true, default: null },
+    tinNo: { type: String, trim: true, default: null },
     notes: { type: String, trim: true, default: null },
     totalAmount: { type: Number, default: 0, min: 0 },
     items: [transactionItemSchema],
