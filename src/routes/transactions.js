@@ -97,8 +97,8 @@ router.post(
       const dbItemMap = {};
       dbItems.forEach((i) => { dbItemMap[i._id.toString()] = i; });
 
-      // Validate stock for sales
-      if (transactionType === 'sale') {
+      // Validate stock for sales and transfers
+      if (transactionType === 'sale' || transactionType === 'transfer') {
         for (const lineItem of items) {
           const dbItem = dbItemMap[lineItem.item];
           if (dbItem.quantity < lineItem.quantity) {
