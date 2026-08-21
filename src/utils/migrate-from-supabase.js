@@ -80,6 +80,16 @@ async function migrate() {
   await mongoose.connect(MONGODB_URI);
   console.log('MongoDB connected');
 
+  // Clear existing data so seed data doesn't conflict with Supabase imports
+  console.log('\n── Clearing existing collections ──');
+  await Promise.all([
+    Category.deleteMany({}),
+    Subcategory.deleteMany({}),
+    Item.deleteMany({}),
+    Transaction.deleteMany({}),
+  ]);
+  console.log('  ✓ Collections cleared');
+
   // ── 1. Categories ──────────────────────────────────────────────────────────
   console.log('\n── Categories ──');
   const sbCategories = await fetchAll('categories', 'id,name');
@@ -110,16 +120,54 @@ async function migrate() {
   }
   console.log(`  ✓ Upserted ${sbSubs.length} subcategories`);
 
-  // ── 3. Items ───────────────────────────────────────────────────────────────
+  // ── 3. Fetch transaction_items early (needed to compute stock quantities) ──
+  console.log('\n── Transaction line items (prefetch) ──');
+  const sbLineItems = await fetchAll(
+    'transaction_items',
+    'id,transaction_id,item_id,quantity,unit_price,total_price,profit'
+  );
+  console.log(`  Found ${sbLineItems.length} line items in Supabase`);
+
+  // Build per-item maps: stock quantity and last sale unit_price
+  const itemStockMap = {};   // item_id → net quantity
+  const itemLastPrice = {};  // item_id → last unit_price from any line item
+  for (const li of sbLineItems) {
+    if (!itemStockMap[li.item_id]) itemStockMap[li.item_id] = 0;
+    // We'll resolve purchase vs sale after we load transactions below.
+    // For now just store raw line items per item.
+    itemLastPrice[li.item_id] = Number(li.unit_price) || 0;
+  }
+
+  // Fetch transactions to know type (purchase/sale) for quantity sign
+  const sbTxnsEarly = await fetchAll(
+    'transactions',
+    'id,transaction_type'
+  );
+  const txTypeMap = {};
+  sbTxnsEarly.forEach((t) => { txTypeMap[t.id] = t.transaction_type; });
+
+  for (const li of sbLineItems) {
+    const type = txTypeMap[li.transaction_id];
+    const qty = Number(li.quantity) || 0;
+    if (type === 'purchase' || type === 'adjustment') itemStockMap[li.item_id] = (itemStockMap[li.item_id] || 0) + qty;
+    else if (type === 'sale') itemStockMap[li.item_id] = (itemStockMap[li.item_id] || 0) - qty;
+  }
+
+  // ── 4. Items ───────────────────────────────────────────────────────────────
   console.log('\n── Items ──');
+  // Note: quantity and unit_price were dropped from the items table in a later
+  // migration. Quantity is derived from transaction_items; unit_price defaults
+  // to the last known line item price for that item.
   const sbItems = await fetchAll(
     'items',
-    'id,name,sku,category_id,subcategory_id,description,quantity,unit_price,cost_price,supplier,parameters,low_stock_threshold,created_at'
+    'id,name,sku,category_id,subcategory_id,description,cost_price,uom,supplier,parameters,low_stock_threshold,created_at'
   );
   console.log(`  Found ${sbItems.length} items in Supabase`);
 
   for (const it of sbItems) {
     const _id = toOid(it.id);
+    const computedQty = itemStockMap[it.id] || 0;
+    const lastPrice   = itemLastPrice[it.id] || Number(it.cost_price) || 0;
     await Item.findByIdAndUpdate(
       _id,
       {
@@ -129,9 +177,10 @@ async function migrate() {
         category:          toOid(it.category_id),
         subcategory:       toOid(it.subcategory_id),
         description:       it.description || '',
-        quantity:          Number(it.quantity) || 0,
-        unitPrice:         Number(it.unit_price) || 0,
+        quantity:          computedQty,
+        unitPrice:         lastPrice,
         costPrice:         Number(it.cost_price) || 0,
+        uom:               it.uom || '',
         supplier:          it.supplier || '',
         parameters:        it.parameters || {},
         lowStockThreshold: Number(it.low_stock_threshold) || 10,
@@ -142,7 +191,7 @@ async function migrate() {
   }
   console.log(`  ✓ Upserted ${sbItems.length} items`);
 
-  // ── 4. Transactions + line items ───────────────────────────────────────────
+  // ── 5. Transactions + line items ───────────────────────────────────────────
   console.log('\n── Transactions ──');
   const sbTxns = await fetchAll(
     'transactions',
@@ -150,11 +199,8 @@ async function migrate() {
   );
   console.log(`  Found ${sbTxns.length} transactions in Supabase`);
 
-  const sbItems2 = await fetchAll(
-    'transaction_items',
-    'id,transaction_id,item_id,quantity,unit_price,total_price,profit'
-  );
-  console.log(`  Found ${sbItems2.length} transaction line items in Supabase`);
+  const sbItems2 = sbLineItems; // already fetched above
+  console.log(`  (reusing ${sbItems2.length} line items already fetched)`);
 
   // Group line items by transaction_id for fast lookup
   const linesByTxn = new Map();
