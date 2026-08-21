@@ -72,18 +72,20 @@ router.post(
   '/',
   [
     body('transactionType').isIn(['purchase', 'sale', 'adjustment', 'transfer']).withMessage('Invalid transaction type'),
-    body('referenceNumber').trim().notEmpty().withMessage('Reference number is required'),
+    body('referenceNumber').optional({ values: 'falsy' }).trim(),
     body('transactionDate').optional().isISO8601().toDate(),
     body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
     body('items.*.item').isMongoId().withMessage('Valid item ID required'),
     body('items.*.quantity').isFloat({ min: 0.01 }).withMessage('Quantity must be > 0'),
-    body('items.*.unitPrice').isFloat({ min: 0 }).withMessage('Unit price must be >= 0'),
+    body('items.*.unitPrice').optional().isFloat({ min: 0 }).withMessage('Unit price must be >= 0'),
   ],
   validate,
-  async (req, res, next) => {
+    async (req, res, next) => {
     try {
-      const { transactionType, referenceNumber, transactionDate, customerSupplierName,
+      const { transactionType, referenceNumber: refInput, transactionDate, customerSupplierName,
         customerSupplierContact, tinNo, notes, items } = req.body;
+
+      const referenceNumber = refInput || `${transactionType === 'transfer' ? 'TRF' : 'TXN'}-${Date.now()}`;
 
       // Validate all items exist
       const itemIds = items.map((i) => i.item);
