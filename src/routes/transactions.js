@@ -37,7 +37,7 @@ router.get('/', async (req, res, next) => {
     const [transactions, total] = await Promise.all([
       Transaction.find(filter)
         .populate('createdBy', 'fullName email')
-        .populate('items.item', 'name sku uom')
+        .populate('items.item', 'name sku uom category subcategory costPrice')
         .sort({ transactionDate: -1, createdAt: -1 })
         .skip(skip)
         .limit(Number(limit)),
@@ -59,7 +59,7 @@ router.get(
     try {
       const transaction = await Transaction.findById(req.params.id)
         .populate('createdBy', 'fullName email')
-        .populate('items.item', 'name sku uom category costPrice');
+        .populate('items.item', 'name sku uom category subcategory costPrice');
       if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
       res.json({ transaction });
     } catch (err) {
@@ -159,7 +159,7 @@ router.post(
 
       const populated = await Transaction.findById(transaction._id)
         .populate('createdBy', 'fullName email')
-        .populate('items.item', 'name sku uom');
+        .populate('items.item', 'name sku uom category subcategory');
 
       await log(req.user._id, `create_${transactionType}`, 'transaction', transaction._id, {
         reference: referenceNumber, totalAmount,
@@ -199,7 +199,7 @@ router.put(
 
       const transaction = await Transaction.findByIdAndUpdate(req.params.id, updates, { new: true })
         .populate('createdBy', 'fullName email')
-        .populate('items.item', 'name sku uom');
+        .populate('items.item', 'name sku uom category subcategory');
       if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
 
       await log(req.user._id, 'update_transaction', 'transaction', transaction._id, updates);
