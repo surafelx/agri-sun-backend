@@ -102,6 +102,7 @@ router.get(
 
       let runningBalance = 0;
       const movements = [];
+      const purchaseBatches = []; // FIFO queue: { lineItemIndex, remaining }
 
       for (const txn of transactions) {
         const lineItem = txn.items.find((i) => i.item.toString() === item._id.toString());
@@ -110,6 +111,23 @@ router.get(
         const qtyIn = txn.transactionType === 'purchase' ? lineItem.quantity : 0;
         const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
         const adjustment = txn.transactionType === 'adjustment' ? lineItem.quantity : 0;
+
+        const movementIndex = movements.length;
+
+        if (qtyIn > 0) {
+          purchaseBatches.push({ movementIndex, remaining: qtyIn });
+        }
+
+        if (qtyOut > 0) {
+          let toDeduct = qtyOut;
+          for (const batch of purchaseBatches) {
+            if (toDeduct <= 0) break;
+            if (batch.remaining <= 0) continue;
+            const deduct = Math.min(batch.remaining, toDeduct);
+            batch.remaining -= deduct;
+            toDeduct -= deduct;
+          }
+        }
 
         runningBalance += qtyIn - qtyOut + adjustment;
 
@@ -121,6 +139,7 @@ router.get(
           type: txn.transactionType,
           quantityIn: qtyIn,
           quantityOut: qtyOut,
+          quantity: lineItem.quantity,
           adjustment,
           balance: runningBalance,
           unitPrice: lineItem.unitPrice,
@@ -131,6 +150,11 @@ router.get(
           notes: txn.notes,
           createdBy: txn.createdBy,
         });
+      }
+
+      // Set remaining per purchase batch
+      for (const batch of purchaseBatches) {
+        movements[batch.movementIndex].remaining = batch.remaining;
       }
 
       res.json({ item, movements, currentBalance: runningBalance });
