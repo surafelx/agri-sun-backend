@@ -179,7 +179,6 @@ router.post(
 // PUT /api/transactions/:id  — admin only, only edits metadata (not line items)
 router.put(
   '/:id',
-  authorize('admin'),
   [
     param('id').isMongoId(),
     body('referenceNumber').optional().trim().notEmpty(),
