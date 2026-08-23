@@ -176,7 +176,7 @@ router.post(
   }
 );
 
-// PUT /api/transactions/:id  — admin only, only edits metadata (not line items)
+// PUT /api/transactions/:id — edit metadata and/or line items (reverses stock for old items, applies new)
 router.put(
   '/:id',
   [
@@ -187,11 +187,18 @@ router.put(
     body('customerSupplierContact').optional().trim(),
     body('tinNo').optional().trim(),
     body('notes').optional().trim(),
+    body('items').optional().isArray({ min: 1 }),
+    body('items.*.item').optional().isMongoId(),
+    body('items.*.quantity').optional().isFloat({ min: 0.01 }),
+    body('items.*.unitPrice').optional().isFloat({ min: 0 }),
   ],
   validate,
   async (req, res, next) => {
     try {
-      const { referenceNumber, transactionDate, customerSupplierName, customerSupplierContact, tinNo, notes } = req.body;
+      const { referenceNumber, transactionDate, customerSupplierName, customerSupplierContact, tinNo, notes, items } = req.body;
+      const transaction = await Transaction.findById(req.params.id);
+      if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
+
       const updates = {};
       if (referenceNumber !== undefined) updates.referenceNumber = referenceNumber;
       if (transactionDate !== undefined) updates.transactionDate = transactionDate;
@@ -200,13 +207,95 @@ router.put(
       if (tinNo !== undefined) updates.tinNo = tinNo;
       if (notes !== undefined) updates.notes = notes;
 
-      const transaction = await Transaction.findByIdAndUpdate(req.params.id, updates, { new: true })
+      if (items && items.length > 0) {
+        // Reverse old stock changes
+        for (const oldItem of transaction.items) {
+          const reverseDelta =
+            transaction.transactionType === 'purchase' ? -oldItem.quantity
+            : transaction.transactionType === 'sale' ? oldItem.quantity
+            : transaction.transactionType === 'transfer' ? oldItem.quantity
+            : -oldItem.quantity;
+          await Item.findByIdAndUpdate(oldItem.item, { $inc: { quantity: reverseDelta } });
+        }
+
+        // Validate new items exist
+        const uniqueItemIds = [...new Set(items.map((i) => i.item))];
+        const dbItems = await Item.find({ _id: { $in: uniqueItemIds } });
+        if (dbItems.length !== uniqueItemIds.length) {
+          return res.status(404).json({ message: 'One or more items not found' });
+        }
+        const dbItemMap = {};
+        dbItems.forEach((i) => { dbItemMap[i._id.toString()] = i; });
+
+        // Validate stock for sales and transfers
+        if (transaction.transactionType === 'sale' || transaction.transactionType === 'transfer') {
+          const requestedQty = {};
+          for (const lineItem of items) {
+            requestedQty[lineItem.item] = (requestedQty[lineItem.item] || 0) + lineItem.quantity;
+          }
+          for (const [itemId, totalRequested] of Object.entries(requestedQty)) {
+            const dbItem = dbItemMap[itemId];
+            if (dbItem.quantity < totalRequested) {
+              // Re-apply old stock before returning error
+              for (const oldItem of transaction.items) {
+                const reDelta =
+                  transaction.transactionType === 'purchase' ? oldItem.quantity
+                  : transaction.transactionType === 'sale' ? -oldItem.quantity
+                  : transaction.transactionType === 'transfer' ? -oldItem.quantity
+                  : oldItem.quantity;
+                await Item.findByIdAndUpdate(oldItem.item, { $inc: { quantity: reDelta } });
+              }
+              return res.status(400).json({
+                message: `Insufficient stock for "${dbItem.name}". Available: ${dbItem.quantity}, Requested: ${totalRequested}`,
+              });
+            }
+          }
+        }
+
+        // Build new line items
+        const lineItems = items.map((lineItem) => {
+          const dbItem = dbItemMap[lineItem.item];
+          const totalPrice = lineItem.quantity * lineItem.unitPrice;
+          const profit = transaction.transactionType === 'sale' ? (lineItem.unitPrice - dbItem.costPrice) * lineItem.quantity : 0;
+          return { item: lineItem.item, quantity: lineItem.quantity, unitPrice: lineItem.unitPrice, totalPrice, profit };
+        });
+
+        updates.items = lineItems;
+        updates.totalAmount = lineItems.reduce((sum, i) => sum + i.totalPrice, 0);
+
+        // Apply new stock changes
+        for (const lineItem of lineItems) {
+          const dbItem = dbItemMap[lineItem.item.toString()];
+          const quantityDelta =
+            transaction.transactionType === 'purchase' ? lineItem.quantity
+            : transaction.transactionType === 'sale' ? -lineItem.quantity
+            : transaction.transactionType === 'transfer' ? -lineItem.quantity
+            : lineItem.quantity;
+
+          let newCostPrice = dbItem.costPrice;
+          if (transaction.transactionType === 'purchase' && dbItem.quantity + lineItem.quantity > 0) {
+            newCostPrice =
+              (dbItem.quantity * dbItem.costPrice + lineItem.quantity * lineItem.unitPrice) /
+              (dbItem.quantity + lineItem.quantity);
+          }
+
+          await Item.findByIdAndUpdate(
+            lineItem.item,
+            {
+              $inc: { quantity: quantityDelta },
+              ...(transaction.transactionType === 'purchase' && { costPrice: newCostPrice }),
+            }
+          );
+        }
+      }
+
+      const updated = await Transaction.findByIdAndUpdate(req.params.id, updates, { new: true })
         .populate('createdBy', 'fullName email')
         .populate('items.item', 'name sku uom category subcategory');
-      if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
+      if (!updated) return res.status(404).json({ message: 'Transaction not found' });
 
-      await log(req.user._id, 'update_transaction', 'transaction', transaction._id, updates);
-      res.json({ transaction });
+      await log(req.user._id, 'update_transaction', 'transaction', updated._id, updates);
+      res.json({ transaction: updated });
     } catch (err) {
       next(err);
     }
