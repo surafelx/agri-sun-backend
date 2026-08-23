@@ -75,7 +75,6 @@ router.post(
 // PUT /api/suppliers/:id
 router.put(
   '/:id',
-  authorize('admin'),
   [
     param('id').isMongoId(),
     body('name').optional().trim().notEmpty(),
