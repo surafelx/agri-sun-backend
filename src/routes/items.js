@@ -102,8 +102,9 @@ router.get(
 
       let runningBalance = 0;
       const movements = [];
-      const purchaseBatches = []; // FIFO queue: { lineItemIndex, remaining }
+      const purchaseBatches = []; // { movementIndex, remaining, reference }
 
+      // Pass 1: build movements and collect purchase batches
       for (const txn of transactions) {
         const lineItem = txn.items.find((i) => i.item.toString() === item._id.toString());
         if (!lineItem) continue;
@@ -115,21 +116,8 @@ router.get(
         const movementIndex = movements.length;
 
         if (qtyIn > 0) {
-          purchaseBatches.push({ movementIndex, remaining: qtyIn });
+          purchaseBatches.push({ movementIndex, remaining: qtyIn, reference: txn.referenceNumber });
         }
-
-        if (qtyOut > 0) {
-          let toDeduct = qtyOut;
-          for (const batch of purchaseBatches) {
-            if (toDeduct <= 0) break;
-            if (batch.remaining <= 0) continue;
-            const deduct = Math.min(batch.remaining, toDeduct);
-            batch.remaining -= deduct;
-            toDeduct -= deduct;
-          }
-        }
-
-        runningBalance += qtyIn - qtyOut + adjustment;
 
         movements.push({
           id: lineItem._id,
@@ -141,7 +129,7 @@ router.get(
           quantityOut: qtyOut,
           quantity: lineItem.quantity,
           adjustment,
-          balance: runningBalance,
+          balance: 0,
           unitPrice: lineItem.unitPrice,
           valueIn: qtyIn * lineItem.unitPrice,
           valueOut: qtyOut * lineItem.unitPrice,
@@ -152,7 +140,43 @@ router.get(
         });
       }
 
-      // Set remaining per purchase batch
+      // Pass 2: deduct sales/transfers from purchase batches
+      for (const txn of transactions) {
+        const lineItem = txn.items.find((i) => i.item.toString() === item._id.toString());
+        if (!lineItem) continue;
+
+        const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
+        if (qtyOut <= 0) continue;
+
+        let toDeduct = qtyOut;
+
+        // First: try to match a purchase ref from the reference (e.g. "TRF-xxx/FS-00001033")
+        const refParts = txn.referenceNumber ? txn.referenceNumber.split('/') : [];
+        if (refParts.length > 1) {
+          const purchaseRef = refParts[refParts.length - 1].trim();
+          const matchedBatch = purchaseBatches.find((b) => b.reference && b.reference.trim() === purchaseRef && b.remaining > 0);
+          if (matchedBatch) {
+            const deduct = Math.min(matchedBatch.remaining, toDeduct);
+            matchedBatch.remaining -= deduct;
+            toDeduct -= deduct;
+          }
+        }
+
+        // Remaining: FIFO from oldest
+        for (const batch of purchaseBatches) {
+          if (toDeduct <= 0) break;
+          if (batch.remaining <= 0) continue;
+          const deduct = Math.min(batch.remaining, toDeduct);
+          batch.remaining -= deduct;
+          toDeduct -= deduct;
+        }
+      }
+
+      // Compute running balance and set remaining per purchase batch
+      for (const m of movements) {
+        runningBalance += m.quantityIn - m.quantityOut + m.adjustment;
+        m.balance = runningBalance;
+      }
       for (const batch of purchaseBatches) {
         movements[batch.movementIndex].remaining = batch.remaining;
       }
