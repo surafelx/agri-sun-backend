@@ -89,22 +89,26 @@ router.post(
       const referenceNumber = refInput || `${transactionType === 'transfer' ? 'TRF' : 'TXN'}-${Date.now()}`;
 
       // Validate all items exist
-      const itemIds = items.map((i) => i.item);
-      const dbItems = await Item.find({ _id: { $in: itemIds } });
-      if (dbItems.length !== itemIds.length) {
+      const uniqueItemIds = [...new Set(items.map((i) => i.item))];
+      const dbItems = await Item.find({ _id: { $in: uniqueItemIds } });
+      if (dbItems.length !== uniqueItemIds.length) {
         return res.status(404).json({ message: 'One or more items not found' });
       }
 
       const dbItemMap = {};
       dbItems.forEach((i) => { dbItemMap[i._id.toString()] = i; });
 
-      // Validate stock for sales and transfers
+      // Validate stock for sales and transfers — aggregate quantities per item
       if (transactionType === 'sale' || transactionType === 'transfer') {
+        const requestedQty = {};
         for (const lineItem of items) {
-          const dbItem = dbItemMap[lineItem.item];
-          if (dbItem.quantity < lineItem.quantity) {
+          requestedQty[lineItem.item] = (requestedQty[lineItem.item] || 0) + lineItem.quantity;
+        }
+        for (const [itemId, totalRequested] of Object.entries(requestedQty)) {
+          const dbItem = dbItemMap[itemId];
+          if (dbItem.quantity < totalRequested) {
             return res.status(400).json({
-              message: `Insufficient stock for "${dbItem.name}". Available: ${dbItem.quantity}, Requested: ${lineItem.quantity}`,
+              message: `Insufficient stock for "${dbItem.name}". Available: ${dbItem.quantity}, Requested: ${totalRequested}`,
             });
           }
         }

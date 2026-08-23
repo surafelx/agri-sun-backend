@@ -150,17 +150,20 @@ router.get(
 
         let toDeduct = qtyOut;
 
-        // First: try to match a purchase ref from the reference (e.g. "TRF-xxx/FS-00001033")
-        const refParts = txn.referenceNumber ? txn.referenceNumber.split('/') : [];
-        if (refParts.length > 1) {
-          const purchaseRef = refParts[refParts.length - 1].trim();
-          const matchedBatch = purchaseBatches.find((b) => b.reference && b.reference.trim() === purchaseRef && b.remaining > 0);
-          if (matchedBatch) {
-            const deduct = Math.min(matchedBatch.remaining, toDeduct);
-            matchedBatch.remaining -= deduct;
-            toDeduct -= deduct;
+          // First: try to match a purchase ref from the reference (e.g. "TRF-xxx/FS-00001033" or "TRF-xxx/FS-00001033,FS-00000847")
+          const refParts = txn.referenceNumber ? txn.referenceNumber.split('/') : [];
+          if (refParts.length > 1) {
+            const purchaseRefs = refParts.slice(1).join('/').split(',').map((r) => r.trim());
+            for (const purchaseRef of purchaseRefs) {
+              if (toDeduct <= 0) break;
+              const matchedBatch = purchaseBatches.find((b) => b.reference && b.reference.trim() === purchaseRef && b.remaining > 0);
+              if (matchedBatch) {
+                const deduct = Math.min(matchedBatch.remaining, toDeduct);
+                matchedBatch.remaining -= deduct;
+                toDeduct -= deduct;
+              }
+            }
           }
-        }
 
         // Remaining: FIFO from oldest
         for (const batch of purchaseBatches) {
