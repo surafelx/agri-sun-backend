@@ -18,16 +18,14 @@ router.post(
     body('fullName').trim().notEmpty().withMessage('Full name is required'),
     body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
     body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-    body('role')
-      .optional()
-      .isIn(['admin', 'inventory_clerk', 'accountant'])
-      .withMessage('Invalid role'),
   ],
   validate,
   async (req, res, next) => {
     try {
-      const { fullName, email, password, role } = req.body;
-      const user = await User.create({ fullName, email, password, role });
+      // A public sign-up never chooses its own role: everyone starts as the default
+      // (inventory_clerk), and only an admin can grant another role, from Admin → Users.
+      const { fullName, email, password } = req.body;
+      const user = await User.create({ fullName, email, password });
       const token = signToken(user._id);
       await log(user._id, 'register', 'user', user._id, { email });
       res.status(201).json({ token, user });
