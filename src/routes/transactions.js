@@ -196,6 +196,13 @@ router.put(
   async (req, res, next) => {
     try {
       const { referenceNumber, transactionDate, customerSupplierName, customerSupplierContact, tinNo, notes, items } = req.body;
+
+      // Anyone may correct a transaction's details; changing its lines moves stock, which is
+      // as serious as deleting it, so that stays with admins (like DELETE)
+      if (items !== undefined && req.user.role !== 'admin') {
+        return res.status(403).json({ message: 'Only an admin can change the items on a transaction.' });
+      }
+
       const transaction = await Transaction.findById(req.params.id);
       if (!transaction) return res.status(404).json({ message: 'Transaction not found' });
 

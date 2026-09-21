@@ -1,7 +1,7 @@
 const express = require('express');
 const Item = require('../models/Item');
 const Transaction = require('../models/Transaction');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, authorize } = require('../middleware/auth');
 
 const router = express.Router();
 router.use(authenticate);
@@ -148,7 +148,8 @@ router.get('/:itemId', async (req, res, next) => {
 });
 
 // POST /api/stock-balance/recalculate  — recalculate all item quantities from transactions
-router.post('/recalculate', async (req, res, next) => {
+// Admins only: it overwrites every item's stored quantity
+router.post('/recalculate', authorize('admin'), async (req, res, next) => {
   try {
     const items = await Item.find({}).select('_id sku name').lean();
     const transactions = await Transaction.find({})
