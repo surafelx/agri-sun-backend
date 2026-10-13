@@ -215,6 +215,12 @@ router.put(
       if (notes !== undefined) updates.notes = notes;
 
       if (items && items.length > 0) {
+        // Validate new items exist before touching stock
+        const uniqueItemIds = [...new Set(items.map((i) => i.item))];
+        if (await Item.countDocuments({ _id: { $in: uniqueItemIds } }) !== uniqueItemIds.length) {
+          return res.status(404).json({ message: 'One or more items not found' });
+        }
+
         // Reverse old stock changes
         for (const oldItem of transaction.items) {
           const reverseDelta =
@@ -225,12 +231,8 @@ router.put(
           await Item.findByIdAndUpdate(oldItem.item, { $inc: { quantity: reverseDelta } });
         }
 
-        // Validate new items exist
-        const uniqueItemIds = [...new Set(items.map((i) => i.item))];
+        // Re-read after the reversal so the stock check sees the returned quantities
         const dbItems = await Item.find({ _id: { $in: uniqueItemIds } });
-        if (dbItems.length !== uniqueItemIds.length) {
-          return res.status(404).json({ message: 'One or more items not found' });
-        }
         const dbItemMap = {};
         dbItems.forEach((i) => { dbItemMap[i._id.toString()] = i; });
 
