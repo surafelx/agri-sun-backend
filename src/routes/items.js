@@ -160,7 +160,7 @@ router.get('/low-stock', async (req, res, next) => {
 router.get('/stock-ledger', async (req, res, next) => {
   try {
     const [items, transactions] = await Promise.all([
-      Item.find({}).populate('category', 'name').sort({ name: 1 }),
+      Item.find({}).populate('category', 'name').populate('subcategory', 'name').sort({ name: 1 }),
       Transaction.find({}).populate('createdBy', 'fullName').sort({ transactionDate: 1, createdAt: 1 }),
     ]);
 
