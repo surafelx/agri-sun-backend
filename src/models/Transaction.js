@@ -7,6 +7,9 @@ const transactionItemSchema = new mongoose.Schema(
     unitPrice: { type: Number, required: true, min: 0 },
     totalPrice: { type: Number, required: true, min: 0 },
     profit: { type: Number, default: 0 },
+    // For sales/transfers: the purchase reference this line draws from, so stock cards can
+    // deduct it from the right batch when one item appears on several lines
+    purchaseRef: { type: String, trim: true, default: null },
   },
   { timestamps: true }
 );

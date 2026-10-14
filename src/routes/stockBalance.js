@@ -6,18 +6,10 @@ const { authenticate, authorize } = require('../middleware/auth');
 const router = express.Router();
 router.use(authenticate);
 
-// Helper: calculate net quantity for an item from its transactions
-function calcBalanceFromTransactions(transactions, itemId) {
-  let qty = 0;
-  for (const txn of transactions) {
-    for (const li of txn.items) {
-      if (li.item.toString() !== itemId.toString()) continue;
-      if (txn.transactionType === 'purchase') qty += li.quantity;
-      else if (txn.transactionType === 'sale' || txn.transactionType === 'transfer') qty -= li.quantity;
-      else if (txn.transactionType === 'adjustment') qty += li.quantity;
-    }
-  }
-  return qty;
+// Signed stock movement of one transaction line
+function lineDelta(transactionType, quantity) {
+  if (transactionType === 'sale' || transactionType === 'transfer') return -quantity;
+  return quantity; // purchase, adjustment
 }
 
 // GET /api/stock-balance
@@ -54,18 +46,18 @@ router.get('/', async (req, res, next) => {
       .select('transactionType items.item items.quantity')
       .lean();
 
-    // Build a map of item_id -> transactions[]
-    const txMap = {};
+    // Sum every line once. (Grouping whole transactions per item counted a transaction twice
+    // when the same item sat on two of its lines, e.g. a transfer drawing from two purchases.)
+    const qtyMap = {};
     for (const txn of transactions) {
       for (const li of txn.items) {
         const key = li.item.toString();
-        if (!txMap[key]) txMap[key] = [];
-        txMap[key].push(txn);
+        qtyMap[key] = (qtyMap[key] || 0) + lineDelta(txn.transactionType, li.quantity);
       }
     }
 
     const balances = items.map((item) => {
-      const quantity = calcBalanceFromTransactions(txMap[item._id.toString()] || [], item._id);
+      const quantity = qtyMap[item._id.toString()] || 0;
       return {
         id: item._id,
         name: item.name,
@@ -99,7 +91,7 @@ router.get('/:itemId', async (req, res, next) => {
 
     // Fetch all transactions for this item
     const transactions = await Transaction.find({ 'items.item': item._id })
-      .select('transactionType items items.totalPrice items.profit')
+      .select('transactionType items')
       .lean();
 
     // Calculate quantities from transactions
@@ -162,9 +154,7 @@ router.post('/recalculate', authorize('admin'), async (req, res, next) => {
       for (const li of txn.items) {
         const key = li.item.toString();
         if (!deltaMap[key]) deltaMap[key] = 0;
-        if (txn.transactionType === 'purchase') deltaMap[key] += li.quantity;
-        else if (txn.transactionType === 'sale' || txn.transactionType === 'transfer') deltaMap[key] -= li.quantity;
-        else if (txn.transactionType === 'adjustment') deltaMap[key] += li.quantity;
+        deltaMap[key] += lineDelta(txn.transactionType, li.quantity);
       }
     }
 

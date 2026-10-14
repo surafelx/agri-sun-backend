@@ -104,74 +104,76 @@ router.get(
       const movements = [];
       const purchaseBatches = []; // { movementIndex, remaining, reference }
 
+      // Every line for this item, not just the first: a transfer can take one item from two purchases
+      const linesFor = (txn) => txn.items.filter((i) => i.item.toString() === item._id.toString());
+
       // Pass 1: build movements and collect purchase batches
       for (const txn of transactions) {
-        const lineItem = txn.items.find((i) => i.item.toString() === item._id.toString());
-        if (!lineItem) continue;
+        for (const lineItem of linesFor(txn)) {
+          const qtyIn = txn.transactionType === 'purchase' ? lineItem.quantity : 0;
+          const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
+          const adjustment = txn.transactionType === 'adjustment' ? lineItem.quantity : 0;
 
-        const qtyIn = txn.transactionType === 'purchase' ? lineItem.quantity : 0;
-        const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
-        const adjustment = txn.transactionType === 'adjustment' ? lineItem.quantity : 0;
+          const movementIndex = movements.length;
 
-        const movementIndex = movements.length;
+          if (qtyIn > 0) {
+            purchaseBatches.push({ movementIndex, remaining: qtyIn, reference: txn.referenceNumber });
+          }
 
-        if (qtyIn > 0) {
-          purchaseBatches.push({ movementIndex, remaining: qtyIn, reference: txn.referenceNumber });
+          movements.push({
+            id: lineItem._id,
+            transactionId: txn._id,
+            date: txn.transactionDate,
+            reference: txn.referenceNumber,
+            type: txn.transactionType,
+            quantityIn: qtyIn,
+            quantityOut: qtyOut,
+            quantity: lineItem.quantity,
+            adjustment,
+            balance: 0,
+            unitPrice: lineItem.unitPrice,
+            valueIn: qtyIn * lineItem.unitPrice,
+            valueOut: qtyOut * lineItem.unitPrice,
+            profit: lineItem.profit,
+            customerSupplier: txn.customerSupplierName,
+            notes: txn.notes,
+            createdBy: txn.createdBy,
+            purchaseRef: lineItem.purchaseRef || null,
+          });
         }
-
-        movements.push({
-          id: lineItem._id,
-          transactionId: txn._id,
-          date: txn.transactionDate,
-          reference: txn.referenceNumber,
-          type: txn.transactionType,
-          quantityIn: qtyIn,
-          quantityOut: qtyOut,
-          quantity: lineItem.quantity,
-          adjustment,
-          balance: 0,
-          unitPrice: lineItem.unitPrice,
-          valueIn: qtyIn * lineItem.unitPrice,
-          valueOut: qtyOut * lineItem.unitPrice,
-          profit: lineItem.profit,
-          customerSupplier: txn.customerSupplierName,
-          notes: txn.notes,
-          createdBy: txn.createdBy,
-        });
       }
 
       // Pass 2: deduct sales/transfers from purchase batches
       for (const txn of transactions) {
-        const lineItem = txn.items.find((i) => i.item.toString() === item._id.toString());
-        if (!lineItem) continue;
+        for (const lineItem of linesFor(txn)) {
+          const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
+          if (qtyOut <= 0) continue;
 
-        const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
-        if (qtyOut <= 0) continue;
+          let toDeduct = qtyOut;
 
-        let toDeduct = qtyOut;
-
-          // First: try to match a purchase ref from the reference (e.g. "TRF-xxx/FS-00001033" or "TRF-xxx/FS-00001033,FS-00000847")
+          // First: the line's own purchase ref; older transactions only carry them in the reference
+          // (e.g. "TRF-xxx/FS-00001033" or "TRF-xxx/FS-00001033,FS-00000847")
           const refParts = txn.referenceNumber ? txn.referenceNumber.split('/') : [];
-          if (refParts.length > 1) {
-            const purchaseRefs = refParts.slice(1).join('/').split(',').map((r) => r.trim());
-            for (const purchaseRef of purchaseRefs) {
-              if (toDeduct <= 0) break;
-              const matchedBatch = purchaseBatches.find((b) => b.reference && b.reference.trim() === purchaseRef && b.remaining > 0);
-              if (matchedBatch) {
-                const deduct = Math.min(matchedBatch.remaining, toDeduct);
-                matchedBatch.remaining -= deduct;
-                toDeduct -= deduct;
-              }
+          const purchaseRefs = lineItem.purchaseRef ? [lineItem.purchaseRef]
+            : refParts.length > 1 ? refParts.slice(1).join('/').split(',').map((r) => r.trim()) : [];
+          for (const purchaseRef of purchaseRefs) {
+            if (toDeduct <= 0) break;
+            const matchedBatch = purchaseBatches.find((b) => b.reference && b.reference.trim() === purchaseRef && b.remaining > 0);
+            if (matchedBatch) {
+              const deduct = Math.min(matchedBatch.remaining, toDeduct);
+              matchedBatch.remaining -= deduct;
+              toDeduct -= deduct;
             }
           }
 
-        // Remaining: FIFO from oldest
-        for (const batch of purchaseBatches) {
-          if (toDeduct <= 0) break;
-          if (batch.remaining <= 0) continue;
-          const deduct = Math.min(batch.remaining, toDeduct);
-          batch.remaining -= deduct;
-          toDeduct -= deduct;
+          // Remaining: FIFO from oldest
+          for (const batch of purchaseBatches) {
+            if (toDeduct <= 0) break;
+            if (batch.remaining <= 0) continue;
+            const deduct = Math.min(batch.remaining, toDeduct);
+            batch.remaining -= deduct;
+            toDeduct -= deduct;
+          }
         }
       }
 

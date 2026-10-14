@@ -125,6 +125,7 @@ router.post(
           unitPrice: lineItem.unitPrice,
           totalPrice,
           profit,
+          purchaseRef: lineItem.purchaseRef || null,
         };
       });
 
@@ -266,7 +267,7 @@ router.put(
           const dbItem = dbItemMap[lineItem.item];
           const totalPrice = lineItem.quantity * lineItem.unitPrice;
           const profit = transaction.transactionType === 'sale' ? (lineItem.unitPrice - dbItem.costPrice) * lineItem.quantity : 0;
-          return { item: lineItem.item, quantity: lineItem.quantity, unitPrice: lineItem.unitPrice, totalPrice, profit };
+          return { item: lineItem.item, quantity: lineItem.quantity, unitPrice: lineItem.unitPrice, totalPrice, profit, purchaseRef: lineItem.purchaseRef || null };
         });
 
         updates.items = lineItems;
