@@ -15,6 +15,98 @@ router.use(authenticate);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// Movement ledger for one item from its transactions (sorted oldest first): one row per line,
+// a running balance, and how much of each purchase is left after sales and transfers draw on it
+function buildStockCard(item, transactions) {
+  let runningBalance = 0;
+  const movements = [];
+  const purchaseBatches = []; // { movementIndex, remaining, reference }
+
+  // Every line for this item, not just the first: a transfer can take one item from two purchases
+  const linesFor = (txn) => txn.items.filter((i) => i.item.toString() === item._id.toString());
+
+  // Pass 1: build movements and collect purchase batches
+  for (const txn of transactions) {
+    for (const lineItem of linesFor(txn)) {
+      const qtyIn = txn.transactionType === 'purchase' ? lineItem.quantity : 0;
+      const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
+      const adjustment = txn.transactionType === 'adjustment' ? lineItem.quantity : 0;
+
+      const movementIndex = movements.length;
+
+      if (qtyIn > 0) {
+        purchaseBatches.push({ movementIndex, remaining: qtyIn, reference: txn.referenceNumber });
+      }
+
+      movements.push({
+        id: lineItem._id,
+        transactionId: txn._id,
+        date: txn.transactionDate,
+        reference: txn.referenceNumber,
+        type: txn.transactionType,
+        quantityIn: qtyIn,
+        quantityOut: qtyOut,
+        quantity: lineItem.quantity,
+        adjustment,
+        balance: 0,
+        unitPrice: lineItem.unitPrice,
+        valueIn: qtyIn * lineItem.unitPrice,
+        valueOut: qtyOut * lineItem.unitPrice,
+        profit: lineItem.profit,
+        customerSupplier: txn.customerSupplierName,
+        notes: txn.notes,
+        createdBy: txn.createdBy,
+        purchaseRef: lineItem.purchaseRef || null,
+      });
+    }
+  }
+
+  // Pass 2: deduct sales/transfers from purchase batches
+  for (const txn of transactions) {
+    for (const lineItem of linesFor(txn)) {
+      const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
+      if (qtyOut <= 0) continue;
+
+      let toDeduct = qtyOut;
+
+      // First: the line's own purchase ref; older transactions only carry them in the reference
+      // (e.g. "TRF-xxx/FS-00001033" or "TRF-xxx/FS-00001033,FS-00000847")
+      const refParts = txn.referenceNumber ? txn.referenceNumber.split('/') : [];
+      const purchaseRefs = lineItem.purchaseRef ? [lineItem.purchaseRef]
+        : refParts.length > 1 ? refParts.slice(1).join('/').split(',').map((r) => r.trim()) : [];
+      for (const purchaseRef of purchaseRefs) {
+        if (toDeduct <= 0) break;
+        const matchedBatch = purchaseBatches.find((b) => b.reference && b.reference.trim() === purchaseRef && b.remaining > 0);
+        if (matchedBatch) {
+          const deduct = Math.min(matchedBatch.remaining, toDeduct);
+          matchedBatch.remaining -= deduct;
+          toDeduct -= deduct;
+        }
+      }
+
+      // Remaining: FIFO from oldest
+      for (const batch of purchaseBatches) {
+        if (toDeduct <= 0) break;
+        if (batch.remaining <= 0) continue;
+        const deduct = Math.min(batch.remaining, toDeduct);
+        batch.remaining -= deduct;
+        toDeduct -= deduct;
+      }
+    }
+  }
+
+  // Compute running balance and set remaining per purchase batch
+  for (const m of movements) {
+    runningBalance += m.quantityIn - m.quantityOut + m.adjustment;
+    m.balance = runningBalance;
+  }
+  for (const batch of purchaseBatches) {
+    movements[batch.movementIndex].remaining = batch.remaining;
+  }
+
+  return { movements, currentBalance: runningBalance };
+}
+
 // GET /api/items
 router.get('/', async (req, res, next) => {
   try {
@@ -64,6 +156,29 @@ router.get('/low-stock', async (req, res, next) => {
   }
 });
 
+// GET /api/items/stock-ledger  — every item's stock card at once, for the workbook export
+router.get('/stock-ledger', async (req, res, next) => {
+  try {
+    const [items, transactions] = await Promise.all([
+      Item.find({}).populate('category', 'name').sort({ name: 1 }),
+      Transaction.find({}).populate('createdBy', 'fullName').sort({ transactionDate: 1, createdAt: 1 }),
+    ]);
+
+    // Each transaction once per item it touches, keeping date order
+    const txByItem = {};
+    for (const txn of transactions) {
+      for (const id of new Set(txn.items.map((li) => li.item.toString()))) {
+        (txByItem[id] ||= []).push(txn);
+      }
+    }
+
+    const ledgers = items.map((item) => ({ item, ...buildStockCard(item, txByItem[item._id.toString()] || []) }));
+    res.json({ ledgers });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/items/:id
 router.get(
   '/:id',
@@ -100,93 +215,7 @@ router.get(
         .populate('createdBy', 'fullName')
         .sort({ transactionDate: 1, createdAt: 1 });
 
-      let runningBalance = 0;
-      const movements = [];
-      const purchaseBatches = []; // { movementIndex, remaining, reference }
-
-      // Every line for this item, not just the first: a transfer can take one item from two purchases
-      const linesFor = (txn) => txn.items.filter((i) => i.item.toString() === item._id.toString());
-
-      // Pass 1: build movements and collect purchase batches
-      for (const txn of transactions) {
-        for (const lineItem of linesFor(txn)) {
-          const qtyIn = txn.transactionType === 'purchase' ? lineItem.quantity : 0;
-          const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
-          const adjustment = txn.transactionType === 'adjustment' ? lineItem.quantity : 0;
-
-          const movementIndex = movements.length;
-
-          if (qtyIn > 0) {
-            purchaseBatches.push({ movementIndex, remaining: qtyIn, reference: txn.referenceNumber });
-          }
-
-          movements.push({
-            id: lineItem._id,
-            transactionId: txn._id,
-            date: txn.transactionDate,
-            reference: txn.referenceNumber,
-            type: txn.transactionType,
-            quantityIn: qtyIn,
-            quantityOut: qtyOut,
-            quantity: lineItem.quantity,
-            adjustment,
-            balance: 0,
-            unitPrice: lineItem.unitPrice,
-            valueIn: qtyIn * lineItem.unitPrice,
-            valueOut: qtyOut * lineItem.unitPrice,
-            profit: lineItem.profit,
-            customerSupplier: txn.customerSupplierName,
-            notes: txn.notes,
-            createdBy: txn.createdBy,
-            purchaseRef: lineItem.purchaseRef || null,
-          });
-        }
-      }
-
-      // Pass 2: deduct sales/transfers from purchase batches
-      for (const txn of transactions) {
-        for (const lineItem of linesFor(txn)) {
-          const qtyOut = txn.transactionType === 'sale' || txn.transactionType === 'transfer' ? lineItem.quantity : 0;
-          if (qtyOut <= 0) continue;
-
-          let toDeduct = qtyOut;
-
-          // First: the line's own purchase ref; older transactions only carry them in the reference
-          // (e.g. "TRF-xxx/FS-00001033" or "TRF-xxx/FS-00001033,FS-00000847")
-          const refParts = txn.referenceNumber ? txn.referenceNumber.split('/') : [];
-          const purchaseRefs = lineItem.purchaseRef ? [lineItem.purchaseRef]
-            : refParts.length > 1 ? refParts.slice(1).join('/').split(',').map((r) => r.trim()) : [];
-          for (const purchaseRef of purchaseRefs) {
-            if (toDeduct <= 0) break;
-            const matchedBatch = purchaseBatches.find((b) => b.reference && b.reference.trim() === purchaseRef && b.remaining > 0);
-            if (matchedBatch) {
-              const deduct = Math.min(matchedBatch.remaining, toDeduct);
-              matchedBatch.remaining -= deduct;
-              toDeduct -= deduct;
-            }
-          }
-
-          // Remaining: FIFO from oldest
-          for (const batch of purchaseBatches) {
-            if (toDeduct <= 0) break;
-            if (batch.remaining <= 0) continue;
-            const deduct = Math.min(batch.remaining, toDeduct);
-            batch.remaining -= deduct;
-            toDeduct -= deduct;
-          }
-        }
-      }
-
-      // Compute running balance and set remaining per purchase batch
-      for (const m of movements) {
-        runningBalance += m.quantityIn - m.quantityOut + m.adjustment;
-        m.balance = runningBalance;
-      }
-      for (const batch of purchaseBatches) {
-        movements[batch.movementIndex].remaining = batch.remaining;
-      }
-
-      res.json({ item, movements, currentBalance: runningBalance });
+      res.json({ item, ...buildStockCard(item, transactions) });
     } catch (err) {
       next(err);
     }
