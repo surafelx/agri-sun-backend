@@ -17,7 +17,11 @@ router.get('/', async (req, res, next) => {
     } = req.query;
 
     const filter = {};
-    if (type) filter.transactionType = type;
+    // One type, or several separated by commas (the cost sheet asks for "transfer,sale")
+    if (type) {
+      const types = String(type).split(',').map((t) => t.trim()).filter(Boolean);
+      filter.transactionType = types.length > 1 ? { $in: types } : types[0];
+    }
     if (createdBy) filter.createdBy = createdBy;
     if (itemId) filter['items.item'] = itemId;
     if (search) {
