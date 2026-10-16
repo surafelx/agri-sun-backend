@@ -9,6 +9,40 @@ const { log } = require('../utils/activityLogger');
 const router = express.Router();
 router.use(authenticate);
 
+// Average cost after buying qty at unitPrice: blended with the stock actually on hand. With none
+// on hand (or less than none, after sales ran ahead of purchases) the new price is the cost.
+function costAfterPurchase(quantity, costPrice, qty, unitPrice) {
+  if (quantity <= 0) return unitPrice;
+  return (quantity * costPrice + qty * unitPrice) / (quantity + qty);
+}
+
+// Average cost after taking a purchase of qty at unitPrice back out of an item holding
+// quantity at costPrice: the exact inverse of the moving average applied when it was bought.
+// With nothing left the average has no meaning, so it is kept as it was.
+function costWithoutPurchase(quantity, costPrice, qty, unitPrice) {
+  const remaining = quantity - qty;
+  if (remaining <= 0) return costPrice;
+  return Math.max(0, (quantity * costPrice - qty * unitPrice) / remaining);
+}
+
+// Takes a transaction's stock movements back out of its items. Purchases also take their
+// price back out of the average cost, so a corrected purchase doesn't leave the old price blended in.
+async function reverseTransactionStock(transaction) {
+  for (const line of transaction.items) {
+    if (transaction.transactionType === 'purchase') {
+      const item = await Item.findById(line.item);
+      if (!item) continue;
+      await Item.findByIdAndUpdate(line.item, {
+        quantity: item.quantity - line.quantity,
+        costPrice: costWithoutPurchase(item.quantity, item.costPrice, line.quantity, line.unitPrice),
+      });
+    } else {
+      const delta = transaction.transactionType === 'sale' || transaction.transactionType === 'transfer' ? line.quantity : -line.quantity;
+      await Item.findByIdAndUpdate(line.item, { $inc: { quantity: delta } });
+    }
+  }
+}
+
 // GET /api/transactions
 router.get('/', async (req, res, next) => {
   try {
@@ -150,12 +184,9 @@ router.post(
           : transactionType === 'transfer' ? -lineItem.quantity
           : lineItem.quantity;
 
-        let newCostPrice = dbItem.costPrice;
-        if (transactionType === 'purchase' && dbItem.quantity + lineItem.quantity > 0) {
-          newCostPrice =
-            (dbItem.quantity * dbItem.costPrice + lineItem.quantity * lineItem.unitPrice) /
-            (dbItem.quantity + lineItem.quantity);
-        }
+        const newCostPrice = transactionType === 'purchase'
+          ? costAfterPurchase(dbItem.quantity, dbItem.costPrice, lineItem.quantity, lineItem.unitPrice)
+          : dbItem.costPrice;
 
         await Item.findByIdAndUpdate(
           lineItem.item,
@@ -164,6 +195,9 @@ router.post(
             ...(transactionType === 'purchase' && { costPrice: newCostPrice }),
           }
         );
+        // The next line for the same item must see this one's effect
+        dbItem.quantity += quantityDelta;
+        dbItem.costPrice = newCostPrice;
       }
 
       const populated = await Transaction.findById(transaction._id)
@@ -226,15 +260,24 @@ router.put(
           return res.status(404).json({ message: 'One or more items not found' });
         }
 
-        // Reverse old stock changes
-        for (const oldItem of transaction.items) {
-          const reverseDelta =
-            transaction.transactionType === 'purchase' ? -oldItem.quantity
-            : transaction.transactionType === 'sale' ? oldItem.quantity
-            : transaction.transactionType === 'transfer' ? oldItem.quantity
-            : -oldItem.quantity;
-          await Item.findByIdAndUpdate(oldItem.item, { $inc: { quantity: reverseDelta } });
+        // A purchase can't be cut below what has already gone out of it: check before changing anything
+        if (transaction.transactionType === 'purchase') {
+          const delta = {};
+          for (const line of transaction.items) delta[line.item.toString()] = (delta[line.item.toString()] || 0) - line.quantity;
+          for (const line of items) delta[line.item] = (delta[line.item] || 0) + line.quantity;
+          const affected = await Item.find({ _id: { $in: Object.keys(delta) } });
+          for (const item of affected) {
+            const after = item.quantity + delta[item._id.toString()];
+            if (after < 0) {
+              return res.status(400).json({
+                message: `"${item.name}" has ${item.quantity} in stock; this change would leave ${after}. More of it has already been sold or transferred than the edited purchase brings in.`,
+              });
+            }
+          }
         }
+
+        // Reverse old stock changes
+        await reverseTransactionStock(transaction);
 
         // Re-read after the reversal so the stock check sees the returned quantities
         const dbItems = await Item.find({ _id: { $in: uniqueItemIds } });
@@ -286,12 +329,9 @@ router.put(
             : transaction.transactionType === 'transfer' ? -lineItem.quantity
             : lineItem.quantity;
 
-          let newCostPrice = dbItem.costPrice;
-          if (transaction.transactionType === 'purchase' && dbItem.quantity + lineItem.quantity > 0) {
-            newCostPrice =
-              (dbItem.quantity * dbItem.costPrice + lineItem.quantity * lineItem.unitPrice) /
-              (dbItem.quantity + lineItem.quantity);
-          }
+          const newCostPrice = transaction.transactionType === 'purchase'
+            ? costAfterPurchase(dbItem.quantity, dbItem.costPrice, lineItem.quantity, lineItem.unitPrice)
+            : dbItem.costPrice;
 
           await Item.findByIdAndUpdate(
             lineItem.item,
@@ -300,6 +340,9 @@ router.put(
               ...(transaction.transactionType === 'purchase' && { costPrice: newCostPrice }),
             }
           );
+          // The next line for the same item must see this one's effect
+          dbItem.quantity += quantityDelta;
+          dbItem.costPrice = newCostPrice;
         }
       }
 
@@ -329,16 +372,8 @@ router.delete(
         return res.status(404).json({ message: 'Transaction not found' });
       }
 
-      // Reverse stock changes
-      for (const lineItem of transaction.items) {
-        const reverseDelta =
-          transaction.transactionType === 'purchase' ? -lineItem.quantity
-          : transaction.transactionType === 'sale' ? lineItem.quantity
-          : transaction.transactionType === 'transfer' ? lineItem.quantity
-          : -lineItem.quantity;
-
-        await Item.findByIdAndUpdate(lineItem.item, { $inc: { quantity: reverseDelta } });
-      }
+      // Reverse stock changes (and, for a purchase, its price in the average cost)
+      await reverseTransactionStock(transaction);
 
       await Transaction.findByIdAndDelete(req.params.id);
 
